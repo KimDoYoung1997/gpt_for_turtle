@@ -20,7 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'turtle_gpt = gpt_for_turtle.turtlesim_controller:main',
+            'turtlesim_gpt = gpt_for_turtle.turtlesim_controller:main',
             'turtlebot3_gpt = gpt_for_turtle.turtlebot3_controller:main'
         ],
     },
