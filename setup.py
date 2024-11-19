@@ -1,6 +1,6 @@
 from setuptools import setup
 
-package_name = 'turtlesim_gpt'
+package_name = 'gpt_for_turtle'
 
 setup(
     name=package_name,
@@ -20,8 +20,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'turtle_gpt = turtlesim_gpt.turtlesim_controller:main',
-            'turtlebot3_gpt = turtlesim_gpt.turtlebot3_controller:main'
+            'turtle_gpt = gpt_for_turtle.turtlesim_controller:main',
+            'turtlebot3_gpt = gpt_for_turtle.turtlebot3_controller:main'
         ],
     },
 )
