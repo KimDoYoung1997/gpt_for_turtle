@@ -11,7 +11,7 @@ import math
 
 class AnymalD_GPTController(Node):
     def __init__(self):
-        super().__init__('turtlebot3_gpt_controller')
+        super().__init__('anymald_gpt_controller')
         self.current_pose = None
         # 환경 변수에서 API 키 읽어오기, OPENAI_API_KEY 키에 저장되어 있는 값을 읽어들인다.
         api_key = os.getenv('OPENAI_API_KEY')
