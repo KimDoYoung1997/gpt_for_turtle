@@ -21,7 +21,9 @@ setup(
     entry_points={
         'console_scripts': [
             'turtlesim_gpt = gpt_for_turtle.turtlesim_controller:main',
-            'turtlebot3_gpt = gpt_for_turtle.turtlebot3_controller:main'
+            'turtlebot3_gpt = gpt_for_turtle.turtlebot3_controller:main',
+            'anymald_gpt = gpt_for_turtle.anymald_controller:main',
+
         ],
     },
 )
