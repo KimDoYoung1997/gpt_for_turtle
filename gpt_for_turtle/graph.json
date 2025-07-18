@@ -1,0 +1,29 @@
+{
+    "directed": false,
+    "multigraph": false,
+    "graph": {},
+    "nodes": [
+        {
+            "id": "door_0",
+            "pose": [
+                2.0,
+                0.0,
+                0.0
+            ],
+            "orientation": [
+                -0.7046164899654862,
+                0.03255617728078197,
+                -0.03198126476515823,
+                0.7081192668566512
+            ],
+            "category": "door",
+            "frame_id": "map",
+            "dimensions": {
+                "width": 0.9212077419890451,
+                "length": 1.3811017216943595,
+                "height": 0.1
+            }
+        }
+    ],
+    "links": []
+}

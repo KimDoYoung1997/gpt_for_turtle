@@ -15,7 +15,6 @@ class TurtleBot3GPTController(Node):
     def __init__(self):
         super().__init__('turtlebot3_gpt_controller')
         self.current_pose = None
-        self.landmarks = {}  # 랜드마크 정보 저장
         
         # 환경 변수에서 API 키 읽어오기, OPENAI_API_KEY 키에 저장되어 있는 값을 읽어들인다.
         api_key = os.getenv('OPENAI_API_KEY')
@@ -24,9 +23,6 @@ class TurtleBot3GPTController(Node):
             return
             
         openai.api_key = api_key
-        
-        # 랜드마크 데이터 로드
-        self.load_landmarks()
         
         # Publisher 설정
         self.velocity_publisher = self.create_publisher(
@@ -105,30 +101,19 @@ class TurtleBot3GPTController(Node):
             "target_yaw": float (선택사항, 라디안 단위, 기본값 0.0)
         }
         
-        3. 랜드마크 기반 내비게이션 명령 (권장): JSON 형식으로 반환 - 미리 정의된 위치로 이동
-        {
-            "command_type": "landmark_navigate",
-            "landmark_name": string (예: "door_0", "room_1" 등)
-        }
-        
-        4. 직접 위치 이동 명령 (백업용): JSON 형식으로 반환 - Nav2 없을 때 사용
+        3. 직접 위치 이동 명령 (백업용): JSON 형식으로 반환 - Nav2 없을 때 사용
         {
             "command_type": "move_to_position",
             "target_x": float,
             "target_y": float
         }
         
-        5. 위치 확인 명령:
+        4. 위치 확인 명령:
         {
             "command_type": "get_pose"
         }
         
-        6. 랜드마크 목록 확인 명령:
-        {
-            "command_type": "list_landmarks"
-        }
-        
-        7. 복합 이동 명령:
+        5. 복합 이동 명령:
         {
             "command_type": "sequence",
             "moves": [
@@ -137,10 +122,6 @@ class TurtleBot3GPTController(Node):
                     "type": "linear" 또는 "angular",
                     "distance": float,
                     "direction": "forward"/"backward" 또는 "left"/"right"
-                },
-                {
-                    "command_type": "landmark_navigate",
-                    "landmark_name": string
                 },
                 {
                     "command_type": "nav2_navigate",
@@ -152,11 +133,10 @@ class TurtleBot3GPTController(Node):
         }
         
         명령 선택 우선순위:
-        1. "door_0으로 가", "room_1로 이동" 등 특정 랜드마크 이름이 있으면 "landmark_navigate" 사용
-        2. 위치 이동 요청시 기본적으로 "nav2_navigate" 사용 (더 안전하고 정확)
-        3. "직접", "단순히", "빠르게" 등의 키워드가 있으면 "move_to_position" 사용
-        4. "랜드마크 목록", "어떤 장소" 등이 있으면 "list_landmarks" 사용
-        5. 복잡한 환경이나 장애물 회피가 필요하면 반드시 "nav2_navigate" 사용      
+        1. 위치 이동 요청시 기본적으로 "nav2_navigate" 사용 (더 안전하고 정확)
+        2. "직접", "단순히", "빠르게" 등의 키워드가 있으면 "move_to_position" 사용
+        3. 복잡한 환경이나 장애물 회피가 필요하면 반드시 "nav2_navigate" 사용
+        4. Nav2가 없는 환경에서는 자동으로 move_to_position으로 폴백됨       
         """
         
         try:
@@ -338,32 +318,6 @@ class TurtleBot3GPTController(Node):
             except Exception as e:
                 self.get_logger().error(f'Nav2 실행 중 오류: {str(e)}. 직접 이동으로 대체합니다.')
                 self.move_to_position(target_x, target_y)
-        
-        elif command_data['command_type'] == 'landmark_navigate':
-            landmark_name = command_data['landmark_name']
-            position = self.get_landmark_position(landmark_name)
-            
-            if position is not None:
-                landmark_x, landmark_y, landmark_yaw = position
-                self.get_logger().info(f'랜드마크 "{landmark_name}"으로 이동: x={landmark_x:.2f}, y={landmark_y:.2f}, yaw={landmark_yaw:.2f}')
-                
-                # Nav2 우선 시도
-                if self.nav_action_client.server_is_ready():
-                    try:
-                        send_goal_future = self.send_nav2_goal(landmark_x, landmark_y, landmark_yaw)
-                        success = self.wait_for_nav2_completion(send_goal_future)
-                        
-                        if not success:
-                            self.get_logger().warn('Nav2 내비게이션이 실패했습니다. 직접 이동으로 재시도합니다.')
-                            self.move_to_position(landmark_x, landmark_y)
-                    except Exception as e:
-                        self.get_logger().error(f'Nav2 실행 중 오류: {str(e)}. 직접 이동으로 대체합니다.')
-                        self.move_to_position(landmark_x, landmark_y)
-                else:
-                    self.get_logger().warn('Nav2가 준비되지 않았습니다. 직접 이동으로 대체합니다.')
-                    self.move_to_position(landmark_x, landmark_y)
-            else:
-                self.get_logger().error(f'랜드마크 "{landmark_name}"을(를) 찾을 수 없습니다.')
             
         elif command_data['command_type'] == 'get_pose':
             if self.update_current_pose():  # TF 업데이트 시도
@@ -374,17 +328,6 @@ class TurtleBot3GPTController(Node):
                 )
                 return  # 성공적으로 위치를 출력한 경우 여기서 종료
             self.get_logger().error('현재 위치를 가져올 수 없습니다.')
-        elif command_data['command_type'] == 'list_landmarks':
-            available_landmarks = self.list_available_landmarks()
-            if available_landmarks:
-                landmarks_info = []
-                for landmark_name in available_landmarks:
-                    landmark = self.landmarks[landmark_name]
-                    landmarks_info.append(f"{landmark_name} ({landmark['category']}): x={landmark['x']:.2f}, y={landmark['y']:.2f}")
-                self.get_logger().info(f'사용 가능한 랜드마크 ({len(available_landmarks)}개):\n' + '\n'.join(landmarks_info))
-            else:
-                self.get_logger().info('등록된 랜드마크가 없습니다.')
-            return
         elif command_data['command_type'] == 'sequence':
             for move in command_data['moves']:
                 if move['command_type'] == 'basic_move':
@@ -393,28 +336,6 @@ class TurtleBot3GPTController(Node):
                 elif move['command_type'] == 'move_to_position':
                     self.move_to_position(move['target_x'], move['target_y'])
                     self.stop_movement()
-                elif move['command_type'] == 'landmark_navigate':
-                    landmark_name = move['landmark_name']
-                    position = self.get_landmark_position(landmark_name)
-                    
-                    if position is not None:
-                        landmark_x, landmark_y, landmark_yaw = position
-                        # Nav2 action server가 사용 가능한지 확인
-                        if self.nav_action_client.server_is_ready():
-                            try:
-                                send_goal_future = self.send_nav2_goal(landmark_x, landmark_y, landmark_yaw)
-                                success = self.wait_for_nav2_completion(send_goal_future)
-                                if not success:
-                                    self.get_logger().warn('Nav2 실패, 직접 이동으로 대체합니다.')
-                                    self.move_to_position(landmark_x, landmark_y)
-                            except Exception as e:
-                                self.get_logger().error(f'Nav2 오류: {str(e)}, 직접 이동으로 대체합니다.')
-                                self.move_to_position(landmark_x, landmark_y)
-                        else:
-                            self.get_logger().warn('Nav2 서버가 준비되지 않아 직접 이동으로 대체합니다.')
-                            self.move_to_position(landmark_x, landmark_y)
-                    else:
-                        self.get_logger().error(f'랜드마크 "{landmark_name}"을(를) 찾을 수 없어 해당 이동을 건너뜁니다.')
                 elif move['command_type'] == 'nav2_navigate':
                     target_x = move['target_x']
                     target_y = move['target_y']
@@ -556,80 +477,6 @@ class TurtleBot3GPTController(Node):
             return 2 * math.pi - angle_diff if angle_diff > math.pi else angle_diff
         else:
             return self.get_logger().info('잘못된 명령입니다. 코드 위치를 확인하세요')
-
-    def load_landmarks(self):
-        """graph.json에서 랜드마크 데이터를 로드합니다."""
-        try:
-            # 현재 패키지 디렉토리에서 graph.json 찾기
-            import rclpy
-            from ament_index_python.packages import get_package_share_directory
-            
-            # 여러 가능한 경로 시도
-            possible_paths = [
-                'src/gpt_for_turtle/gpt_for_turtle/graph.json',  # 현재 ws 기준
-                '/home/keti/turtlesim_gpt_ws/src/gpt_for_turtle/gpt_for_turtle/graph.json',  # 절대 경로
-                'graph.json'  # 현재 디렉토리
-            ]
-            
-            graph_data = None
-            for path in possible_paths:
-                try:
-                    with open(path, 'r') as f:
-                        graph_data = json.load(f)
-                        self.get_logger().info(f'graph.json을 로드했습니다: {path}')
-                        break
-                except FileNotFoundError:
-                    continue
-            
-            if graph_data is None:
-                self.get_logger().warn('graph.json 파일을 찾을 수 없습니다. 랜드마크 기능이 비활성화됩니다.')
-                return
-            
-            # nodes 배열에서 랜드마크 정보 추출
-            if 'nodes' in graph_data:
-                for node in graph_data['nodes']:
-                    if 'id' in node and 'pose' in node:
-                        landmark_id = node['id']
-                        pose = node['pose']  # [x, y, z]
-                        
-                        # yaw 계산 (orientation에서)
-                        yaw = 0.0
-                        if 'orientation' in node and len(node['orientation']) >= 4:
-                            # quaternion [x, y, z, w]에서 yaw 계산
-                            qx, qy, qz, qw = node['orientation']
-                            yaw = math.atan2(2*(qw*qz + qx*qy), 1-2*(qy*qy + qz*qz))
-                        
-                        self.landmarks[landmark_id] = {
-                            'x': pose[0],
-                            'y': pose[1],
-                            'z': pose[2] if len(pose) > 2 else 0.0,
-                            'yaw': yaw,
-                            'category': node.get('category', 'unknown')
-                        }
-                        
-                self.get_logger().info(f'랜드마크 데이터를 로드했습니다. 총 {len(self.landmarks)}개: {list(self.landmarks.keys())}')
-            else:
-                self.get_logger().warn('graph.json에 nodes 정보가 없습니다.')
-                
-        except json.JSONDecodeError as e:
-            self.get_logger().error(f'graph.json 파싱 오류: {str(e)}')
-        except Exception as e:
-            self.get_logger().error(f'랜드마크 로드 중 오류: {str(e)}')
-
-    def get_landmark_position(self, landmark_name):
-        """랜드마크 이름으로 해당 랜드마크의 위치를 반환합니다."""
-        if landmark_name in self.landmarks:
-            landmark = self.landmarks[landmark_name]
-            return landmark['x'], landmark['y'], landmark.get('yaw', 0.0)
-        else:
-            # 사용 가능한 랜드마크 목록 표시
-            available = list(self.landmarks.keys())
-            self.get_logger().error(f'랜드마크 "{landmark_name}"을(를) 찾을 수 없습니다. 사용 가능한 랜드마크: {available}')
-            return None
-
-    def list_available_landmarks(self):
-        """사용 가능한 랜드마크 목록을 반환합니다."""
-        return list(self.landmarks.keys())
 
 
 def main(args=None):
