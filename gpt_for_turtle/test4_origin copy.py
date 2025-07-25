@@ -1,0 +1,404 @@
+from openai import OpenAI
+import base64
+from PIL import Image
+import io
+import json
+import os
+import re
+import math
+from collections import defaultdict, deque
+
+api_key = os.getenv('OPENAI_API_KEY')
+
+client = OpenAI(api_key=api_key)
+
+# PGM 파일을 PNG로 변환 후 base64로 인코딩
+def convert_pgm_to_base64_png(pgm_path):
+    # PGM 파일을 PIL Image로 열기
+    image = Image.open(pgm_path)
+    
+    # PNG 형식으로 변환하여 메모리 버퍼에 저장
+    buffer = io.BytesIO()
+    image.save(buffer, format='PNG')
+    buffer.seek(0)
+    
+    # base64로 인코딩
+    return base64.b64encode(buffer.read()).decode('utf-8')
+
+# YAML 파일 내용 읽기
+def read_yaml_content(yaml_path):
+    with open(yaml_path, "r") as yaml_file:
+        return yaml_file.read()
+
+# JSON 파일 내용 읽기
+def read_json_content(json_path):
+    with open(json_path, "r") as json_file:
+        return json.load(json_file)
+
+# occupancy grid map 이미지를 PNG로 변환하여 인코딩
+base64_image = convert_pgm_to_base64_png("/home/keti/turtlesim_gpt_ws/src/gpt_for_turtle/gpt_for_turtle/map/250722.pgm")
+
+# YAML 파일 내용 읽기
+yaml_content = read_yaml_content("/home/keti/turtlesim_gpt_ws/src/gpt_for_turtle/gpt_for_turtle/map/250722.yaml")
+
+# Graph JSON 파일 내용 읽기
+graph_data = read_json_content("/home/keti/turtlesim_gpt_ws/src/gpt_for_turtle/gpt_for_turtle/obj_poses.json")
+
+response = client.chat.completions.create(
+    model="gpt-4.1-2025-04-14",
+    messages=[
+        {
+            "role": "system",
+            "content": """당신은 로봇 경로계획 전문가입니다. 
+
+**전문 분야:**
+- Occupancy Grid Map 분석
+- SLAM 데이터 해석  
+- 로봇 내비게이션 경로 최적화
+- Door/Elevator 감지 데이터 후처리
+
+**분석 방법론:**
+1. 맵 구조 체계적 분석 (레이아웃, 장애물, 자유공간)
+2. Door/Elevator 위치 검증
+3. 구역별 연결성 분석
+4. Strategic Waypoint 네트워크 생성
+
+**출력 요구사항:**
+- 단계별 상세 분석 과정 제시
+- 최종 waypoint 테이블 (번호, 이름, 좌표, 역할, 연결노드)
+- 명확한 네이밍 규칙과 연결성 정보
+- A* 알고리즘 적용 가능한 형태
+
+**고려사항:**
+- 0.6m 로봇 접근성 확보
+- 데이터의 잠재적 중복/오차 처리
+- 시각적 연결 공간의 올바른 구역 분류"""
+        },
+        {
+            "role": "user",
+            "content": """간단한 맵 데이터를 분석하여 Strategic Waypoint 네트워크를 생성해주세요.
+
+**맵 정보 (YAML):**
+```yaml
+resolution: 0.05
+origin: [-10.0, -10.0, 0.0]
+```
+
+**Door/Elevator 정보 (JSON):**
+```json
+{
+  "door": [
+    {
+      "centroid": [2.5, 3.0, 0.0],
+      "hull_points": [[2.4, 2.8], [2.6, 3.2]]
+    }
+  ],
+  "elevator": [
+    {
+      "centroid": [8.0, 5.0, 0.0], 
+      "hull_points": [[7.8, 4.8], [8.2, 5.2]]
+    }
+  ]
+}
+```
+
+**요청:** 위 데이터와 맵 이미지를 분석하여 waypoint 네트워크를 설계해주세요."""
+        },
+        {
+            "role": "assistant",
+            "content": """## 🔍 **단계별 분석 결과**
+
+**STEP 1: 맵 구조 분석**
+- 건물 레이아웃: 직사각형 형태의 단일층 구조
+- 구분되는 영역: 메인 복도 1개, 방 1개, 엘리베이터 구역 1개
+- 자유공간: 흰색 영역으로 로봇 이동 가능
+- 장애물: 검은색 벽체로 물리적 차단
+
+**STEP 2: Door/Elevator 위치 분석**
+- Door1 (2.5, 3.0): 메인 복도에서 방A로 연결하는 출입구
+- Elevator1 (8.0, 5.0): 메인 복도에서 접근 가능한 엘리베이터
+
+**STEP 3: 구역 정의 및 연결성**
+- 메인 복도: Door1과 Elevator1을 연결하는 중앙 통로
+- 방A: Door1을 통해 메인 복도와 연결
+- 엘리베이터 내부: Elevator1을 통해 메인 복도와 연결
+
+**STEP 4: Strategic Waypoint 생성**
+
+## ✅ **최종 Waypoint 리스트**
+
+| 번호 | 이름                     | 좌표(x,y)            | 역할/설명                         | 연결 가능 노드 |
+|-----|-------------------------|---------------------|-----------------------------------|---------------|
+| 1   | hub_center              | (5.0, 4.0)           | 중앙 허브/복도 중심              | 2,3           |
+| 2   | door1_entry             | (2.0, 3.0)           | 문1 접근점 (방A 입구)           | 1, 4          |
+| 3   | elevator1_entry         | (7.5, 5.0)           | 엘리베이터1 접근점                | 1, 5          |
+| 4   | roomA_center            | (1.5, 2.5)           | 방A 내부 중심                   | 2             |
+| 5   | elevator1_center        | (8.0, 5.0)           | 엘리베이터1 내부 중심                  | 3             |
+
+**추가 정보:**
+- **총 waypoint 개수**: 5개
+- **주요 연결 경로**: hub_center를 중심으로 한 스타 네트워크 구조
+- **로봇 접근성**: 모든 waypoint는 0.6m 로봇이 안전하게 접근 가능
+- **A* 적용**: 각 waypoint 간 직선 거리 기반 휴리스틱 적용 가능"""
+        },
+        {
+            "role": "user",
+            "content": f"""다음 실제 맵 데이터를 분석하여 Strategic Waypoint 네트워크를 생성해주세요.
+
+**맵 정보 (YAML):**
+```yaml
+{yaml_content}
+```
+
+**Door/Elevator 정보 (JSON):**
+```json
+{json.dumps(graph_data, indent=2)}
+```
+
+**📊 데이터 구조:**
+- `door`: centroid 중심점 + hull_points 외곽점
+- `elevator`: centroid 중심점 + hull_points 외곽점  
+- `centroid`: 각 객체의 중심점 좌표 [x, y, z]
+- `hull_points`: 객체의 실제 형태를 나타내는 외곽 점들
+
+**⚠️ 중요한 고려사항:**
+1. **데이터 후처리**: 이미 어느 정도 정제되었지만 여전히 중복이나 오차 가능성 존재
+2. **중심점 기반 분석**: centroid를 주요 위치로 활용하되, hull_points로 실제 크기/형태 확인
+3. **방 구획 정확성**: 시각적으로 연결된 공간을 별개 방으로 오인하지 말 것
+4. **접근성 고려**: door/elevator 주변의 접근 가능한 영역 확인 필요
+5. **waypoint 위치**: occupancy grid map 폐곡선 내부(자유공간)에 배치
+
+**네이밍 규칙:**
+- `hub_*`: 중앙 허브/메인 복도로, 다수의 문 또는 엘리베이터와 연결되어 방(room) 또는 엘리베이터 내부(center)로 이동할 수 있는 중심 위치
+- `door*_entry`: 문 접근점
+- `elevator*_entry`: 엘리베이터 접근점
+- `room*_center`: 각 방 내부 중심으로, door와 연결되어 있음
+- `elevator*_center`: 엘리베이터 중심으로, elevator와 연결되어 있음
+
+위의 예시와 동일한 형식으로 단계별 분석과 최종 waypoint 테이블을 제공해주세요."""
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url", 
+                    "image_url": {
+                        "url": f"data:image/png;base64,{base64_image}"
+                    }
+                }
+            ]
+        }
+    ],
+    temperature=0.0
+)
+
+print("=== SYSTEMATIC HIGH-LEVEL PATH PLANNING ANALYSIS ===")
+print(response.choices[0].message.content)
+
+# GPT 응답에서 waypoint 정보를 파싱하는 함수
+def parse_waypoints_from_gpt_response(gpt_response):
+    waypoints = {}
+    connections = {}
+    
+    lines = gpt_response.split('\n')
+    parsing_table = False
+    
+    for line in lines:
+        # 테이블 시작 찾기
+        if '번호' in line and '이름' in line and '좌표' in line:
+            parsing_table = True
+            continue
+        
+        # 테이블 데이터 파싱
+        if parsing_table and '|' in line:
+            parts = [p.strip() for p in line.split('|')]
+            if len(parts) >= 6 and parts[1].isdigit():
+                try:
+                    node_id = int(parts[1])
+                    name = parts[2]
+                    
+                    # 좌표 파싱 (x, y) 형태
+                    coord_match = re.search(r'\(([^,]+),\s*([^)]+)\)', parts[3])
+                    if coord_match:
+                        x = float(coord_match.group(1))
+                        y = float(coord_match.group(2))
+                        
+                        waypoints[node_id] = {
+                            'name': name,
+                            'x': x, 
+                            'y': y,
+                            'description': parts[4]
+                        }
+                        
+                        # 연결 노드 파싱
+                        connection_str = parts[5].replace(' ', '')
+                        if connection_str and connection_str != '-':
+                            connected_nodes = [int(n) for n in connection_str.split(',') if n.isdigit()]
+                            connections[node_id] = connected_nodes
+                
+                except (ValueError, IndexError):
+                    continue
+    
+    return waypoints, connections
+
+# 주어진 좌표가 어떤 영역에 속하는지 판단하는 함수
+def determine_region(x, y, waypoints):
+    min_distance = float('inf')
+    closest_waypoint = None
+    
+    for node_id, waypoint in waypoints.items():
+        distance = math.sqrt((x - waypoint['x'])**2 + (y - waypoint['y'])**2)
+        if distance < min_distance:
+            min_distance = distance
+            closest_waypoint = node_id
+    
+    return closest_waypoint
+
+# A* 알고리즘을 이용한 경로 탐색
+def find_path_a_star(start_node, goal_node, waypoints, connections):
+    if start_node == goal_node:
+        return [start_node]
+    
+    # 휴리스틱 함수 (유클리드 거리)
+    def heuristic(node1, node2):
+        wp1, wp2 = waypoints[node1], waypoints[node2]
+        return math.sqrt((wp1['x'] - wp2['x'])**2 + (wp1['y'] - wp2['y'])**2)
+    
+    # 실제 거리 계산
+    def distance(node1, node2):
+        wp1, wp2 = waypoints[node1], waypoints[node2]
+        return math.sqrt((wp1['x'] - wp2['x'])**2 + (wp1['y'] - wp2['y'])**2)
+    
+    open_set = {start_node}
+    came_from = {}
+    g_score = defaultdict(lambda: float('inf'))
+    g_score[start_node] = 0
+    f_score = defaultdict(lambda: float('inf'))
+    f_score[start_node] = heuristic(start_node, goal_node)
+    
+    while open_set:
+        current = min(open_set, key=lambda x: f_score[x])
+        
+        if current == goal_node:
+            # 경로 재구성
+            path = []
+            while current in came_from:
+                path.append(current)
+                current = came_from[current]
+            path.append(start_node)
+            return path[::-1]
+        
+        open_set.remove(current)
+        
+        # 연결된 노드들 탐색
+        if current in connections:
+            for neighbor in connections[current]:
+                tentative_g = g_score[current] + distance(current, neighbor)
+                
+                if tentative_g < g_score[neighbor]:
+                    came_from[neighbor] = current
+                    g_score[neighbor] = tentative_g
+                    f_score[neighbor] = tentative_g + heuristic(neighbor, goal_node)
+                    open_set.add(neighbor)
+    
+    return []  # 경로를 찾을 수 없음
+
+# 경로 계획 메인 함수
+def plan_high_level_path(robot_x, robot_y, goal_x, goal_y, waypoints, connections):
+    print(f"\n=== HIGH-LEVEL PATH PLANNING ===")
+    print(f"🤖 로봇 현재 위치: ({robot_x}, {robot_y})")
+    print(f"🎯 목표 위치: ({goal_x}, {goal_y})")
+    
+    # 현재 위치와 목표 위치에서 가장 가까운 waypoint 찾기
+    start_waypoint = determine_region(robot_x, robot_y, waypoints)
+    goal_waypoint = determine_region(goal_x, goal_y, waypoints)
+    
+    print(f"📍 시작 영역: {waypoints[start_waypoint]['name']} (Waypoint {start_waypoint})")
+    print(f"📍 목표 영역: {waypoints[goal_waypoint]['name']} (Waypoint {goal_waypoint})")
+    
+    # 경로 탐색
+    path = find_path_a_star(start_waypoint, goal_waypoint, waypoints, connections)
+    
+    if path:
+        print(f"\n✅ 계획된 경로 ({len(path)}개 waypoint):")
+        for i, node_id in enumerate(path):
+            waypoint = waypoints[node_id]
+            print(f"   {i+1}. {waypoint['name']} → ({waypoint['x']:.1f}, {waypoint['y']:.1f})")
+            
+        print(f"\n📋 상세 이동 계획:")
+        for i in range(len(path)-1):
+            current_wp = waypoints[path[i]]
+            next_wp = waypoints[path[i+1]]
+            distance = math.sqrt((current_wp['x'] - next_wp['x'])**2 + (current_wp['y'] - next_wp['y'])**2)
+            print(f"   Step {i+1}: {current_wp['name']} → {next_wp['name']} (거리: {distance:.1f}m)")
+            
+    else:
+        print("❌ 경로를 찾을 수 없습니다!")
+        
+    return path
+
+# GPT 응답에서 waypoint 정보 파싱
+print("\n=== PARSING WAYPOINT DATA ===")
+waypoints, connections = parse_waypoints_from_gpt_response(response.choices[0].message.content)
+
+print(f"✅ 파싱된 waypoint 개수: {len(waypoints)}")
+print(f"✅ 연결 정보: {len(connections)}개 노드")
+
+# 파싱된 데이터 확인
+print("\n📋 Waypoint 정보:")
+for node_id, waypoint in sorted(waypoints.items()):
+    connected = connections.get(node_id, [])
+    print(f"   {node_id}: {waypoint['name']} ({waypoint['x']:.1f}, {waypoint['y']:.1f}) → 연결: {connected}")
+
+# 사용자 입력을 받아 경로 계획 실행
+def interactive_path_planning():
+    print("\n" + "="*50)
+    print("🚀 INTERACTIVE PATH PLANNING")
+    print("="*50)
+    
+    while True:
+        try:
+            print("\n좌표 입력 (종료하려면 'quit' 입력):")
+            
+            # 현재 위치 입력
+            robot_input = input("🤖 로봇 현재 위치 (x y): ").strip()
+            if robot_input.lower() == 'quit':
+                break
+                
+            robot_x, robot_y = map(float, robot_input.split())
+            
+            # 목표 위치 입력  
+            goal_input = input("🎯 목표 위치 (x y): ").strip()
+            if goal_input.lower() == 'quit':
+                break
+                
+            goal_x, goal_y = map(float, goal_input.split())
+            
+            # 경로 계획 실행
+            path = plan_high_level_path(robot_x, robot_y, goal_x, goal_y, waypoints, connections)
+            
+            # 계속할지 물어보기
+            continue_input = input("\n다른 경로를 계획하시겠습니까? (y/n): ").strip().lower()
+            if continue_input != 'y':
+                break
+                
+        except ValueError:
+            print("❌ 잘못된 입력 형식입니다. 숫자를 공백으로 구분해서 입력해주세요.")
+        except KeyboardInterrupt:
+            print("\n\n👋 프로그램을 종료합니다.")
+            break
+
+# 예시 실행
+print("\n" + "="*50)
+print("🧪 EXAMPLE PATH PLANNING")
+print("="*50)
+
+# 예시 1: 사용자가 제시한 케이스
+plan_high_level_path(1, 5, 8, 4, waypoints, connections)
+
+# 예시 2: 다른 케이스
+plan_high_level_path(4.5, -4.5, -1.5, -0.4, waypoints, connections)
+
+# 대화형 경로 계획 실행
+if __name__ == "__main__":
+    interactive_path_planning()

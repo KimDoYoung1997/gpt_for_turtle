@@ -7,7 +7,7 @@ from geometry_msgs.msg import Twist, Point, TransformStamped, PoseStamped
 from nav2_msgs.action import NavigateToPose
 import tf2_ros
 from tf2_ros import TransformException
-import openai
+from openai import OpenAI
 import json
 import math
 
@@ -23,7 +23,8 @@ class TurtleBot3GPTController(Node):
             self.get_logger().error('OPENAI_API_KEY 환경 변수가 설정되지 않았습니다.')
             return
             
-        openai.api_key = api_key
+        # OpenAI 클라이언트 초기화 (1.0.0 버전)
+        self.openai_client = OpenAI(api_key=api_key)
         
         # 랜드마크 데이터 로드
         self.load_landmarks()
@@ -53,7 +54,327 @@ class TurtleBot3GPTController(Node):
             self.get_logger().warn('Nav2 action server를 찾을 수 없습니다. nav2 명령은 사용할 수 없습니다.')
         else:
             self.get_logger().info('Nav2 action server가 준비되었습니다!')
-    
+
+    def get_available_functions(self):
+        """OpenAI function calling을 위한 함수 정의들을 반환합니다."""
+        return [
+            {
+                "name": "basic_move",
+                "description": "기본적인 직선 이동 또는 회전 이동을 수행합니다.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "move_type": {
+                            "type": "string",
+                            "enum": ["linear", "angular"],
+                            "description": "이동 타입: linear(직선 이동) 또는 angular(회전)"
+                        },
+                        "distance": {
+                            "type": "number",
+                            "description": "이동 거리 (미터) 또는 회전 각도 (라디안)"
+                        },
+                        "direction": {
+                            "type": "string",
+                            "enum": ["forward", "backward", "left", "right"],
+                            "description": "이동 방향"
+                        }
+                    },
+                    "required": ["move_type", "distance", "direction"]
+                }
+            },
+            {
+                "name": "nav2_navigate",
+                "description": "Nav2를 사용하여 지정된 좌표로 안전하게 내비게이션합니다 (장애물 회피 포함).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "target_x": {
+                            "type": "number",
+                            "description": "목적지 X 좌표 (미터)"
+                        },
+                        "target_y": {
+                            "type": "number", 
+                            "description": "목적지 Y 좌표 (미터)"
+                        },
+                        "target_yaw": {
+                            "type": "number",
+                            "description": "목적지에서의 방향 (라디안, 선택사항)",
+                            "default": 0.0
+                        }
+                    },
+                    "required": ["target_x", "target_y"]
+                }
+            },
+            {
+                "name": "landmark_navigate",
+                "description": "미리 정의된 랜드마크로 이동합니다.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "landmark_name": {
+                            "type": "string",
+                            "description": "이동할 랜드마크 이름 (예: door_0, room_1 등)"
+                        }
+                    },
+                    "required": ["landmark_name"]
+                }
+            },
+            {
+                "name": "move_to_position",
+                "description": "Nav2 없이 직접 좌표로 이동합니다 (빠르지만 장애물 회피 없음).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "target_x": {
+                            "type": "number",
+                            "description": "목적지 X 좌표 (미터)"
+                        },
+                        "target_y": {
+                            "type": "number",
+                            "description": "목적지 Y 좌표 (미터)"
+                        }
+                    },
+                    "required": ["target_x", "target_y"]
+                }
+            },
+            {
+                "name": "get_current_pose",
+                "description": "로봇의 현재 위치와 방향을 확인합니다.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
+                "name": "list_landmarks",
+                "description": "사용 가능한 랜드마크 목록을 표시합니다.",
+                "parameters": {
+                    "type": "object", 
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
+                "name": "execute_sequence",
+                "description": "여러 동작을 순차적으로 실행합니다.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "actions": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "action_type": {
+                                        "type": "string",
+                                        "enum": ["basic_move", "nav2_navigate", "landmark_navigate", "move_to_position"]
+                                    },
+                                    "parameters": {
+                                        "type": "object",
+                                        "description": "해당 액션의 파라미터"
+                                    }
+                                }
+                            },
+                            "description": "실행할 동작들의 배열"
+                        }
+                    },
+                    "required": ["actions"]
+                }
+            }
+        ]
+
+    def generate_movement_command(self, prompt):
+        """OpenAI function calling을 사용하여 명령을 처리합니다."""
+        system_message = """
+        당신은 ROS2 TurtleBot3 로봇을 제어하는 시스템입니다.
+        사용자의 명령을 분석하여 적절한 함수를 호출해주세요.
+        
+        함수 선택 가이드라인:
+        1. 특정 랜드마크 이름이 언급되면 landmark_navigate 사용
+        2. 좌표 이동 시 기본적으로 nav2_navigate 사용 (안전함)
+        3. "빠르게", "직접", "단순히" 등의 키워드가 있으면 move_to_position 사용
+        4. 기본 이동(앞/뒤/좌/우)은 basic_move 사용
+        5. 현재 위치 확인 요청은 get_current_pose 사용
+        6. 랜드마크 목록 요청은 list_landmarks 사용
+        7. 복잡한 명령은 execute_sequence 사용
+        
+        각도는 라디안으로 변환:
+        - 90도 = 1.5708 라디안
+        - 45도 = 0.7854 라디안  
+        - 180도 = 3.1416 라디안
+        """
+        
+        try:
+            response = self.openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": prompt}
+                ],
+                functions=self.get_available_functions(),
+                function_call="auto"
+            )
+            
+            message = response.choices[0].message
+            
+            if hasattr(message, 'function_call') and message.function_call:
+                function_name = message.function_call.name
+                function_args = json.loads(message.function_call.arguments)
+                
+                self.get_logger().info(f'GPT가 선택한 함수: {function_name}')
+                self.get_logger().info(f'함수 인자: {function_args}')
+                
+                # 함수 실행
+                return self.execute_function(function_name, function_args)
+            else:
+                self.get_logger().warn('GPT가 함수를 선택하지 않았습니다.')
+                return False
+                
+        except Exception as e:
+            self.get_logger().error(f'GPT 오류: {str(e)}')
+            return False
+
+    def execute_function(self, function_name, function_args):
+        """선택된 함수를 실행합니다."""
+        try:
+            if function_name == "basic_move":
+                return self.func_basic_move(**function_args)
+            elif function_name == "nav2_navigate":
+                return self.func_nav2_navigate(**function_args)
+            elif function_name == "landmark_navigate":
+                return self.func_landmark_navigate(**function_args)
+            elif function_name == "move_to_position":
+                return self.func_move_to_position(**function_args)
+            elif function_name == "get_current_pose":
+                return self.func_get_current_pose()
+            elif function_name == "list_landmarks":
+                return self.func_list_landmarks()
+            elif function_name == "execute_sequence":
+                return self.func_execute_sequence(**function_args)
+            else:
+                self.get_logger().error(f'알 수 없는 함수: {function_name}')
+                return False
+        except Exception as e:
+            self.get_logger().error(f'함수 실행 오류 ({function_name}): {str(e)}')
+            return False
+
+    # Function implementations
+    def func_basic_move(self, move_type, distance, direction):
+        """기본 이동 함수 구현"""
+        if not self.wait_for_pose_update():
+            return False
+        
+        target_distance = abs(float(distance))
+        
+        if move_type == "linear":
+            linear_x = 0.2 if direction == 'forward' else -0.2
+            angular_z = 0.0
+        else:  # angular
+            linear_x = 0.0
+            angular_z = 0.5 if direction == 'left' else -0.5
+        
+        start_pos = self.get_current_position()
+        start_theta = self.get_current_orientation()
+        
+        while rclpy.ok():
+            if not self.wait_for_pose_update():
+                break
+            
+            current_progress = self.calculate_movement_values(
+                move_type, 
+                self.get_current_position(), 
+                start_pos=start_pos, 
+                start_theta=start_theta
+            )
+            
+            if current_progress >= target_distance:
+                break
+            
+            self.move_robot(linear_x, angular_z)
+            rclpy.spin_once(self, timeout_sec=0.1)
+        
+        self.stop_movement()
+        return True
+
+    def func_nav2_navigate(self, target_x, target_y, target_yaw=0.0):
+        """Nav2 내비게이션 함수 구현"""
+        if not self.nav_action_client.server_is_ready():
+            self.get_logger().warn('Nav2 action server가 준비되지 않았습니다. 직접 이동으로 대체합니다.')
+            return self.func_move_to_position(target_x, target_y)
+        
+        try:
+            send_goal_future = self.send_nav2_goal(target_x, target_y, target_yaw)
+            success = self.wait_for_nav2_completion(send_goal_future)
+            
+            if not success:
+                self.get_logger().warn('Nav2 내비게이션이 실패했습니다. 직접 이동으로 재시도합니다.')
+                return self.func_move_to_position(target_x, target_y)
+            
+            return True
+        except Exception as e:
+            self.get_logger().error(f'Nav2 실행 중 오류: {str(e)}. 직접 이동으로 대체합니다.')
+            return self.func_move_to_position(target_x, target_y)
+
+    def func_landmark_navigate(self, landmark_name):
+        """랜드마크 내비게이션 함수 구현"""
+        position = self.get_landmark_position(landmark_name)
+        
+        if position is not None:
+            landmark_x, landmark_y, landmark_yaw = position
+            self.get_logger().info(f'랜드마크 "{landmark_name}"으로 이동: x={landmark_x:.2f}, y={landmark_y:.2f}, yaw={landmark_yaw:.2f}')
+            return self.func_nav2_navigate(landmark_x, landmark_y, landmark_yaw)
+        else:
+            self.get_logger().error(f'랜드마크 "{landmark_name}"을(를) 찾을 수 없습니다.')
+            return False
+
+    def func_move_to_position(self, target_x, target_y):
+        """직접 위치 이동 함수 구현"""
+        self.move_to_position(target_x, target_y)
+        return True
+
+    def func_get_current_pose(self):
+        """현재 위치 확인 함수 구현"""
+        if self.update_current_pose():
+            self.get_logger().info(
+                f'현재 위치: x={self.current_pose.transform.translation.x:.2f}, '
+                f'y={self.current_pose.transform.translation.y:.2f}, '
+                f'theta={self.get_yaw_from_quaternion(self.current_pose.transform.rotation):.2f}'
+            )
+            return True
+        else:
+            self.get_logger().error('현재 위치를 가져올 수 없습니다.')
+            return False
+
+    def func_list_landmarks(self):
+        """랜드마크 목록 함수 구현"""
+        available_landmarks = self.list_available_landmarks()
+        if available_landmarks:
+            landmarks_info = []
+            for landmark_name in available_landmarks:
+                landmark = self.landmarks[landmark_name]
+                landmarks_info.append(f"{landmark_name} ({landmark['category']}): x={landmark['x']:.2f}, y={landmark['y']:.2f}")
+            self.get_logger().info(f'사용 가능한 랜드마크 ({len(available_landmarks)}개):\n' + '\n'.join(landmarks_info))
+        else:
+            self.get_logger().info('등록된 랜드마크가 없습니다.')
+        return True
+
+    def func_execute_sequence(self, actions):
+        """순차 실행 함수 구현"""
+        for action in actions:
+            action_type = action['action_type']
+            parameters = action['parameters']
+            
+            self.get_logger().info(f'순차 실행: {action_type} with {parameters}')
+            
+            success = self.execute_function(action_type, parameters)
+            if not success:
+                self.get_logger().warn(f'순차 실행 중 {action_type} 실패, 계속 진행합니다.')
+            
+            rclpy.spin_once(self, timeout_sec=0.1)
+        
+        return True
+
     def update_current_pose(self):
         wait_count = 0
         self.update_bool = False
@@ -76,101 +397,6 @@ class TurtleBot3GPTController(Node):
         
         # self.get_logger().error('TF를 가져올 수 없습니다.')
         return False
-    
-    def generate_movement_command(self, prompt):
-        system_message = """
-        당신은 ROS2 TurtleBot3 로봇을 제어하는 시스템입니다.
-        다음과 같은 명령을 처리할 수 있습니다:
-        
-        1. 기본 이동 명령: JSON 형식으로 반환
-        {
-            "command_type": "basic_move",
-            "type": "linear" 또는 "angular",
-            "distance": float(미터 또는 라디안),
-            "direction": "forward"/"backward" 또는 "left"/"right"
-        }
-        
-        각도 회전 시:
-        - 90도는 1.5708 라디안 
-        - 45도는 0.7854 라디안
-        - 180도는 3.1416 라디안
-        
-        모든 각도는 라디안으로 변환하여 distance에 입력해야 합니다.
-
-        2. Nav2 내비게이션 명령 (권장): JSON 형식으로 반환 - 경로 계획과 장애물 회피 포함
-        {
-            "command_type": "nav2_navigate",
-            "target_x": float,
-            "target_y": float,
-            "target_yaw": float (선택사항, 라디안 단위, 기본값 0.0)
-        }
-        
-        3. 랜드마크 기반 내비게이션 명령 (권장): JSON 형식으로 반환 - 미리 정의된 위치로 이동
-        {
-            "command_type": "landmark_navigate",
-            "landmark_name": string (예: "door_0", "room_1" 등)
-        }
-        
-        4. 직접 위치 이동 명령 (백업용): JSON 형식으로 반환 - Nav2 없을 때 사용
-        {
-            "command_type": "move_to_position",
-            "target_x": float,
-            "target_y": float
-        }
-        
-        5. 위치 확인 명령:
-        {
-            "command_type": "get_pose"
-        }
-        
-        6. 랜드마크 목록 확인 명령:
-        {
-            "command_type": "list_landmarks"
-        }
-        
-        7. 복합 이동 명령:
-        {
-            "command_type": "sequence",
-            "moves": [
-                {
-                    "command_type": "basic_move",
-                    "type": "linear" 또는 "angular",
-                    "distance": float,
-                    "direction": "forward"/"backward" 또는 "left"/"right"
-                },
-                {
-                    "command_type": "landmark_navigate",
-                    "landmark_name": string
-                },
-                {
-                    "command_type": "nav2_navigate",
-                    "target_x": float,
-                    "target_y": float,
-                    "target_yaw": float
-                }
-            ]
-        }
-        
-        명령 선택 우선순위:
-        1. "door_0으로 가", "room_1로 이동" 등 특정 랜드마크 이름이 있으면 "landmark_navigate" 사용
-        2. 위치 이동 요청시 기본적으로 "nav2_navigate" 사용 (더 안전하고 정확)
-        3. "직접", "단순히", "빠르게" 등의 키워드가 있으면 "move_to_position" 사용
-        4. "랜드마크 목록", "어떤 장소" 등이 있으면 "list_landmarks" 사용
-        5. 복잡한 환경이나 장애물 회피가 필요하면 반드시 "nav2_navigate" 사용      
-        """
-        
-        try:
-            response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            return json.loads(response.choices[0].message.content)
-        except Exception as e:
-            self.get_logger().error(f'GPT 오류: {str(e)}')
-            return None
 
     def send_nav2_goal(self, target_x, target_y, target_yaw=0.0):
         """Nav2 NavigateToPose action을 사용하여 목적지로 이동합니다."""
@@ -308,182 +534,7 @@ class TurtleBot3GPTController(Node):
     def stop_movement(self):
         twist = Twist()
         self.velocity_publisher.publish(twist)
-    
-    def execute_command(self, command_data):
-        if command_data['command_type'] == 'basic_move':
-            self.execute_basic_movement(command_data)
-        elif command_data['command_type'] == 'move_to_position':
-            self.move_to_position(command_data['target_x'], command_data['target_y'])
-        elif command_data['command_type'] == 'nav2_navigate':
-            target_x = command_data['target_x']
-            target_y = command_data['target_y']
-            target_yaw = command_data.get('target_yaw', 0.0)  # 기본값 0.0
-            
-            # Nav2 action server가 사용 가능한지 확인
-            if not self.nav_action_client.server_is_ready():
-                self.get_logger().warn('Nav2 action server가 준비되지 않았습니다. 직접 이동으로 대체합니다.')
-                self.move_to_position(target_x, target_y)
-                return
-            
-            # Nav2 goal 전송
-            try:
-                send_goal_future = self.send_nav2_goal(target_x, target_y, target_yaw)
-                success = self.wait_for_nav2_completion(send_goal_future)
-                
-                # Nav2가 실패한 경우 직접 이동으로 폴백
-                if not success:
-                    self.get_logger().warn('Nav2 내비게이션이 실패했습니다. 직접 이동으로 재시도합니다.')
-                    self.move_to_position(target_x, target_y)
-                    
-            except Exception as e:
-                self.get_logger().error(f'Nav2 실행 중 오류: {str(e)}. 직접 이동으로 대체합니다.')
-                self.move_to_position(target_x, target_y)
-        
-        elif command_data['command_type'] == 'landmark_navigate':
-            landmark_name = command_data['landmark_name']
-            position = self.get_landmark_position(landmark_name)
-            
-            if position is not None:
-                landmark_x, landmark_y, landmark_yaw = position
-                self.get_logger().info(f'랜드마크 "{landmark_name}"으로 이동: x={landmark_x:.2f}, y={landmark_y:.2f}, yaw={landmark_yaw:.2f}')
-                
-                # Nav2 우선 시도
-                if self.nav_action_client.server_is_ready():
-                    try:
-                        send_goal_future = self.send_nav2_goal(landmark_x, landmark_y, landmark_yaw)
-                        success = self.wait_for_nav2_completion(send_goal_future)
-                        
-                        if not success:
-                            self.get_logger().warn('Nav2 내비게이션이 실패했습니다. 직접 이동으로 재시도합니다.')
-                            self.move_to_position(landmark_x, landmark_y)
-                    except Exception as e:
-                        self.get_logger().error(f'Nav2 실행 중 오류: {str(e)}. 직접 이동으로 대체합니다.')
-                        self.move_to_position(landmark_x, landmark_y)
-                else:
-                    self.get_logger().warn('Nav2가 준비되지 않았습니다. 직접 이동으로 대체합니다.')
-                    self.move_to_position(landmark_x, landmark_y)
-            else:
-                self.get_logger().error(f'랜드마크 "{landmark_name}"을(를) 찾을 수 없습니다.')
-            
-        elif command_data['command_type'] == 'get_pose':
-            if self.update_current_pose():  # TF 업데이트 시도
-                self.get_logger().info(
-                    f'현재 위치: x={self.current_pose.transform.translation.x:.2f}, '
-                    f'y={self.current_pose.transform.translation.y:.2f}, '
-                    f'theta={self.get_yaw_from_quaternion(self.current_pose.transform.rotation):.2f}'
-                )
-                return  # 성공적으로 위치를 출력한 경우 여기서 종료
-            self.get_logger().error('현재 위치를 가져올 수 없습니다.')
-        elif command_data['command_type'] == 'list_landmarks':
-            available_landmarks = self.list_available_landmarks()
-            if available_landmarks:
-                landmarks_info = []
-                for landmark_name in available_landmarks:
-                    landmark = self.landmarks[landmark_name]
-                    landmarks_info.append(f"{landmark_name} ({landmark['category']}): x={landmark['x']:.2f}, y={landmark['y']:.2f}")
-                self.get_logger().info(f'사용 가능한 랜드마크 ({len(available_landmarks)}개):\n' + '\n'.join(landmarks_info))
-            else:
-                self.get_logger().info('등록된 랜드마크가 없습니다.')
-            return
-        elif command_data['command_type'] == 'sequence':
-            for move in command_data['moves']:
-                if move['command_type'] == 'basic_move':
-                    self.execute_basic_movement(move)
-                    self.stop_movement()
-                elif move['command_type'] == 'move_to_position':
-                    self.move_to_position(move['target_x'], move['target_y'])
-                    self.stop_movement()
-                elif move['command_type'] == 'landmark_navigate':
-                    landmark_name = move['landmark_name']
-                    position = self.get_landmark_position(landmark_name)
-                    
-                    if position is not None:
-                        landmark_x, landmark_y, landmark_yaw = position
-                        # Nav2 action server가 사용 가능한지 확인
-                        if self.nav_action_client.server_is_ready():
-                            try:
-                                send_goal_future = self.send_nav2_goal(landmark_x, landmark_y, landmark_yaw)
-                                success = self.wait_for_nav2_completion(send_goal_future)
-                                if not success:
-                                    self.get_logger().warn('Nav2 실패, 직접 이동으로 대체합니다.')
-                                    self.move_to_position(landmark_x, landmark_y)
-                            except Exception as e:
-                                self.get_logger().error(f'Nav2 오류: {str(e)}, 직접 이동으로 대체합니다.')
-                                self.move_to_position(landmark_x, landmark_y)
-                        else:
-                            self.get_logger().warn('Nav2 서버가 준비되지 않아 직접 이동으로 대체합니다.')
-                            self.move_to_position(landmark_x, landmark_y)
-                    else:
-                        self.get_logger().error(f'랜드마크 "{landmark_name}"을(를) 찾을 수 없어 해당 이동을 건너뜁니다.')
-                elif move['command_type'] == 'nav2_navigate':
-                    target_x = move['target_x']
-                    target_y = move['target_y']
-                    target_yaw = move.get('target_yaw', 0.0)
-                    
-                    if self.nav_action_client.server_is_ready():
-                        try:
-                            send_goal_future = self.send_nav2_goal(target_x, target_y, target_yaw)
-                            success = self.wait_for_nav2_completion(send_goal_future)
-                            if not success:
-                                self.get_logger().warn('Nav2 실패, 직접 이동으로 대체합니다.')
-                                self.move_to_position(target_x, target_y)
-                        except Exception as e:
-                            self.get_logger().error(f'Nav2 오류: {str(e)}, 직접 이동으로 대체합니다.')
-                            self.move_to_position(target_x, target_y)
-                    else:
-                        self.get_logger().warn('Nav2 서버가 준비되지 않아 직접 이동으로 대체합니다.')
-                        self.move_to_position(target_x, target_y)
-                rclpy.spin_once(self, timeout_sec=0.1)
-    
-    def execute_basic_movement(self, movement_data):
-        if not self.wait_for_pose_update():
-            return
-        
-        # sequence 명령의 경우
-        if 'linear_x' in movement_data and 'angular_z' in movement_data:
-            linear_x = float(movement_data.get('linear_x', 0.0))
-            angular_z = float(movement_data.get('angular_z', 0.0))
-            duration = float(movement_data.get('duration', 1.0))  # 기본값 1초
-            
-            start_time = self.get_clock().now()
-            while (self.get_clock().now() - start_time).nanoseconds / 1e9 < duration:
-                self.move_robot(linear_x, angular_z)
-                rclpy.spin_once(self, timeout_sec=0.1)
-        
-        # 기존 basic_move 명령의 경우
-        else:
-            movement_type = movement_data.get('type', 'linear')
-            target_distance = abs(float(movement_data.get('distance', 0.0)))
-            direction = movement_data.get('direction', 'forward')
-            
-            linear_x = 0.2 if direction == 'forward' else -0.2
-            angular_z = 0.5 if direction == 'left' else -0.5
-            
-            start_pos = self.get_current_position()
-            start_theta = self.get_current_orientation()
-            
-            while rclpy.ok():
-                if not self.wait_for_pose_update():
-                    break
-                
-                current_progress = self.calculate_movement_values(
-                    movement_type, 
-                    self.get_current_position(), 
-                    start_pos=start_pos, 
-                    start_theta=start_theta
-                )
-                
-                if current_progress >= target_distance:
-                    break
-                
-                self.move_robot(
-                    linear_x if movement_type == 'linear' else 0.0,
-                    angular_z if movement_type == 'angular' else 0.0
-                )
-                rclpy.spin_once(self, timeout_sec=0.1)
-        
-        self.stop_movement()
-    
+
     def run(self):
         while rclpy.ok():
             try:
@@ -491,10 +542,9 @@ class TurtleBot3GPTController(Node):
                 if prompt.lower() == 'quit':
                     break
                 
-                command_data = self.generate_movement_command(prompt)   #  prompt : 'x 0, y 1 만큼 이동해'  # command_data : {'command_type': 'move_to_position', 'target_x': 0.0, 'target_y': 1.0}
-                if command_data:
-                    self.get_logger().info(f'실행할 명령: {command_data}')
-                    self.execute_command(command_data)
+                success = self.generate_movement_command(prompt)
+                if not success:
+                    self.get_logger().error('명령 처리에 실패했습니다.')
                 
             except KeyboardInterrupt:
                 break
