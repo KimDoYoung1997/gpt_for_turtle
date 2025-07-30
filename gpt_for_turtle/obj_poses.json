@@ -1,7 +1,7 @@
 {
     "door": [
         {
-            "class_name": "door",
+            "class_name": "door1",
             "centroid": [
                 2.215696529624979,
                 2.850583937408388,
@@ -46,7 +46,7 @@
             ]
         },
         {
-            "class_name": "door",
+            "class_name": "door2",
             "centroid": [
                 7.40121084508292,
                 3.2100159533549704,
@@ -101,7 +101,7 @@
             ]
         },
         {
-            "class_name": "door",
+            "class_name": "door3",
             "centroid": [
                 4.24233488807208,
                 -4.012847199797815,
@@ -178,7 +178,7 @@
     ],
     "elevator": [
         {
-            "class_name": "elevator",
+            "class_name": "elevator1",
             "centroid": [
                 4.763046126374756,
                 2.4489048843427628,
@@ -233,7 +233,7 @@
             ]
         },
         {
-            "class_name": "elevator",
+            "class_name": "elevator2",
             "centroid": [
                 -1.6246938289357238,
                 -0.3550271767041815,

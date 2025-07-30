@@ -72,7 +72,7 @@ map_analysis_response = client.chat.completions.create(
 - 접근 가능한 경로
 
 **중요사항:**
-- 흰색 = 자유공간, 검은색 = 장애물
+- 흰색 = 자유공간, 검은색 = 장애물, 회색 = 미탐지 영역(플래닝할때 사용하지 말 것)
 - 방 = 3면이 벽으로 둘러싸인 넓은 공간
 - 복도 = 긴 통로형 공간
 - 모든 좌표는 월드 좌표계로 표현 (해상도와 원점 고려)"""
@@ -87,7 +87,7 @@ map_analysis_response = client.chat.completions.create(
 **맵 메타데이터:**
 - 해상도: {resolution_value}m/픽셀
 - 원점: {origin_value}
-- 이미지: 흰색=자유공간, 검은색=벽
+- 이미지: 흰색=자유공간, 검은색=벽, 회색=미탐지 영역(플래닝할때 사용하지 말 것)
 
 **분석 요청:**
 1. 전체 건물 레이아웃 파악
@@ -191,6 +191,7 @@ response = client.chat.completions.create(
                     - 구분되는 영역: 메인 복도 1개, 방 1개, 엘리베이터 구역 1개
                     - 자유공간: 흰색 영역으로 로봇 이동 가능
                     - 장애물: 검은색 벽체로 물리적 차단
+                    - 미탐지 영역: 회색 영역으로 로봇 이동 불가
 
                     **STEP 2: Door/Elevator 위치 분석**
                     - Door1 (2.5, 3.0): 메인 복도에서 방A로 연결하는 출입구
@@ -216,7 +217,6 @@ response = client.chat.completions.create(
                     **추가 정보:**
                     - **총 waypoint 개수**: 5개
                     - **주요 연결 경로**: hub_center를 중심으로 한 스타 네트워크 구조
-                    - **로봇 접근성**: 모든 waypoint는 0.6m 로봇이 안전하게 접근 가능
                     - **A* 적용**: 각 waypoint 간 직선 거리 기반 휴리스틱 적용 가능
                     """
         },
