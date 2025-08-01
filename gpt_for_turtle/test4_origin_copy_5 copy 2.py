@@ -191,16 +191,9 @@ response = client.chat.completions.create(
 # GPT 응답에서 waypoint 정보 파싱 (조용한 모드)
 waypoints, connections = parse_waypoints_from_gpt_response(response.choices[0].message.content)
 
-# GPT 응답 전체 내용 출력
-print("\n" + "="*80)
-print("📋 GPT GENERATED WAYPOINT NETWORK RESPONSE")
-print("="*80)
-print(response.choices[0].message.content)
-print("="*80)
-
 # Waypoint 테이블 출력
 print("\n" + "="*80)
-print("📋 PARSED WAYPOINT SUMMARY")
+print("📋 GENERATED WAYPOINT NETWORK")
 print("="*80)
 print_waypoint_table(response.choices[0].message.content)
 

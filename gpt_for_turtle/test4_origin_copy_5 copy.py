@@ -19,10 +19,10 @@ api_key = os.getenv('OPENAI_API_KEY')
 client = OpenAI(api_key=api_key)
 
 # occupancy grid map 이미지를 PNG로 변환하여 인코딩
-base64_image = convert_pgm_to_base64_png("/home/keti/turtlesim_gpt_ws/src/gpt_for_turtle/gpt_for_turtle/map/250724.pgm")
+base64_image = convert_pgm_to_base64_png("/home/keti/turtlesim_gpt_ws/src/gpt_for_turtle/gpt_for_turtle/map/250722.pgm")
 
 # YAML 파일 내용 읽기
-yaml_content = read_yaml_content("/home/keti/turtlesim_gpt_ws/src/gpt_for_turtle/gpt_for_turtle/map/250724.yaml")
+yaml_content = read_yaml_content("/home/keti/turtlesim_gpt_ws/src/gpt_for_turtle/gpt_for_turtle/map/250722.yaml")
 
 # Graph JSON 파일 내용 읽기
 graph_data = read_json_content("/home/keti/turtlesim_gpt_ws/src/gpt_for_turtle/gpt_for_turtle/obj_poses.json")
@@ -119,13 +119,11 @@ response = client.chat.completions.create(
 
                     ## ✅ **최종 Waypoint 리스트**
 
-                    | 번호 | 이름                     | 좌표(x,y)            | 역할/설명                         | 연결 가능 노드 |
-                    |-----|-------------------------|---------------------|-----------------------------------|---------------|
-                    | 1   | hub_center              | (5.0, 4.0)           | 중앙 허브/복도 중심              | 2,3           |
-                    | 2   | door1_entry             | (2.0, 3.0)           | 문1 접근점 (방A 입구)           | 1, 4          |
-                    | 3   | elevator1_entry         | (7.5, 5.0)           | 엘리베이터1 접근점                | 1, 5          |
-                    | 4   | roomA_center            | (1.5, 2.5)           | 방A 내부 중심                   | 2             |
-                    | 5   | elevator1_center        | (8.0, 5.0)           | 엘리베이터1 내부 중심                  | 3             |
+                    | 번호 | 이름                       | 좌표(x,y)            | 역할/설명                         | 연결 가능 노드 |
+                    |-----|---------------------------|---------------------|-----------------------------------|---------------|
+                    | 1   | center                    | (5.0, 4.0)           | 중앙 허브                          | 2,3           |
+                    | 2   | room1_entry(door1)        | (2.0, 3.0)           | 방1 접근점 (문1)                    | 1,          |
+                    | 3   | elevator1_entry(elevator1)| (7.5, 5.0)           | 엘리베이터1 입구                     | 1          |
 
                     **추가 정보:**
                     - **총 waypoint 개수**: 5개
@@ -191,16 +189,9 @@ response = client.chat.completions.create(
 # GPT 응답에서 waypoint 정보 파싱 (조용한 모드)
 waypoints, connections = parse_waypoints_from_gpt_response(response.choices[0].message.content)
 
-# GPT 응답 전체 내용 출력
-print("\n" + "="*80)
-print("📋 GPT GENERATED WAYPOINT NETWORK RESPONSE")
-print("="*80)
-print(response.choices[0].message.content)
-print("="*80)
-
 # Waypoint 테이블 출력
 print("\n" + "="*80)
-print("📋 PARSED WAYPOINT SUMMARY")
+print("📋 GENERATED WAYPOINT NETWORK")
 print("="*80)
 print_waypoint_table(response.choices[0].message.content)
 
@@ -210,8 +201,8 @@ print(f"✅ Connection info: {len(connections)} nodes")
 # Occupancy Grid Map 로드 (조용한 모드)
 try:
     grid_map = OccupancyGridMap(
-        "/home/keti/turtlesim_gpt_ws/src/gpt_for_turtle/gpt_for_turtle/map/250724.pgm",
-        "/home/keti/turtlesim_gpt_ws/src/gpt_for_turtle/gpt_for_turtle/map/250724.yaml"
+        "/home/keti/turtlesim_gpt_ws/src/gpt_for_turtle/gpt_for_turtle/map/250722.pgm",
+        "/home/keti/turtlesim_gpt_ws/src/gpt_for_turtle/gpt_for_turtle/map/250722.yaml"
     )
     
     # 조용한 검증 (검증만 수행하고 출력하지 않음)
